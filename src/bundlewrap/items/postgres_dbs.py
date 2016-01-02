@@ -4,7 +4,8 @@ from __future__ import unicode_literals
 from pipes import quote
 
 from bundlewrap.exceptions import BundleError
-from bundlewrap.items import Item
+from bundlewrap.items import Item, ItemStatus
+from bundlewrap.utils.text import bold, red
 from bundlewrap.utils.text import mark_for_translation as _
 
 
@@ -52,36 +53,57 @@ class PostgresDB(Item):
     ITEM_TYPE_NAME = "postgres_db"
     NEEDS_STATIC = [
         "pkg_apt:",
+        "pkg_dnf",
         "pkg_pacman:",
         "pkg_yum:",
         "pkg_zypper:",
+        "pkg_pkgsrc:",
         "postgres_role:",
     ]
     def __repr__(self):
         return "<PostgresDB name:{}>".format(self.name)
 
-    def cdict(self):
-        if self.attributes['delete']:
-            return {}
-        else:
-            return {'owner': self.attributes['owner']}
+    def ask(self, status):
+        if not status.info['exists'] and not self.attributes['delete']:
+            return _("Doesn't exist. Do you want to create it?")
+        if status.info['exists'] and self.attributes['delete']:
+            return red(_("Will be deleted."))
+        if status.info['owner'] != self.attributes['owner']:
+            return "{}  {} → {}".format(
+                bold(_("owner")),
+                status.info['owner'],
+                self.attributes['owner'],
+            )
 
     def fix(self, status):
-        if not status.cdict:
-            drop_db(self.node, self.name)
-        elif not status.sdict:
-            create_db(self.node, self.name, self.attributes['owner'])
-        elif 'owner' in status.keys:
+        if 'existence' in status.info['needs_fixing']:
+            if self.attributes['delete']:
+                drop_db(self.node, self.name)
+            else:
+                create_db(self.node, self.name, self.attributes['owner'])
+        elif 'owner' in status.info['needs_fixing']:
             set_owner(self.node, self.name, self.attributes['owner'])
-        else:
-            raise AssertionError("this shouldn't happen")
 
-    def sdict(self):
+    def get_status(self):
         databases = get_databases(self.node)
-        if self.name not in databases:
-            return {}
-        else:
-            return {'owner': databases[self.name]['owner']}
+        status_info = {
+            'exists': self.name in databases,
+            'needs_fixing': [],
+        }
+        try:
+            status_info.update(databases[self.name])
+        except KeyError:
+            pass
+        if self.attributes['delete'] == status_info['exists']:
+            status_info['needs_fixing'].append('existence')
+            return ItemStatus(correct=False, info=status_info)
+        elif (
+            not self.attributes['delete'] and
+            self.attributes['owner'] != databases[self.name]['owner']
+        ):
+            status_info['needs_fixing'].append('owner')
+            return ItemStatus(correct=False, info=status_info)
+        return ItemStatus(correct=True, info=status_info)
 
     @classmethod
     def validate_attributes(cls, bundle, item_id, attributes):

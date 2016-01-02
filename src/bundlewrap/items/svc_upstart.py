@@ -4,7 +4,9 @@ from __future__ import unicode_literals
 from pipes import quote
 
 from bundlewrap.exceptions import BundleError
-from bundlewrap.items import Item
+from bundlewrap.items import Item, ItemStatus
+from bundlewrap.utils import LOG
+from bundlewrap.utils.text import bold, green, red
 from bundlewrap.utils.text import mark_for_translation as _
 
 
@@ -14,7 +16,10 @@ def svc_start(node, svcname):
 
 def svc_running(node, svcname):
     result = node.run("initctl status -- {}".format(quote(svcname)))
-    return " start/" in result.stdout_text
+    if " start/" not in result.stdout:
+        return False
+    else:
+        return True
 
 
 def svc_stop(node, svcname):
@@ -32,9 +37,11 @@ class SvcUpstart(Item):
     ITEM_TYPE_NAME = "svc_upstart"
     NEEDS_STATIC = [
         "pkg_apt:",
+        "pkg_dnf",
         "pkg_pacman:",
         "pkg_yum:",
         "pkg_zypper:",
+        "pkg_pkgsrc:",
     ]
 
     def __repr__(self):
@@ -43,10 +50,31 @@ class SvcUpstart(Item):
             self.attributes['running'],
         )
 
+    def ask(self, status):
+        before = _("running") if status.info['running'] \
+            else _("not running")
+        after = green(_("running")) if self.attributes['running'] \
+            else red(_("not running"))
+        return "{} {} → {}\n".format(
+            bold(_("status")),
+            before,
+            after,
+        )
+
     def fix(self, status):
         if self.attributes['running'] is False:
+            LOG.info(_("{node}:{bundle}:{item}: stopping...").format(
+                bundle=self.bundle.name,
+                item=self.id,
+                node=self.node.name,
+            ))
             svc_stop(self.node, self.name)
         else:
+            LOG.info(_("{node}:{bundle}:{item}: starting...").format(
+                bundle=self.bundle.name,
+                item=self.id,
+                node=self.node.name,
+            ))
             svc_start(self.node, self.name)
 
     def get_canned_actions(self):
@@ -65,8 +93,13 @@ class SvcUpstart(Item):
             },
         }
 
-    def sdict(self):
-        return {'running': svc_running(self.node, self.name)}
+    def get_status(self):
+        service_running = svc_running(self.node, self.name)
+        item_status = (service_running == self.attributes['running'])
+        return ItemStatus(
+            correct=item_status,
+            info={'running': service_running},
+        )
 
     @classmethod
     def validate_attributes(cls, bundle, item_id, attributes):
